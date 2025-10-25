@@ -42,6 +42,8 @@ def make_single_request(prompt_index):
     """
     prompt = TEST_PROMPTS[prompt_index]
     start_time = time.time()
+    error_type = None
+    error_code = None
 
     try:
         response = client.chat.completions.create(
@@ -62,19 +64,140 @@ def make_single_request(prompt_index):
             "prompt": prompt,
             "response": response_text,
             "duration": round(duration, 2),
-            "success": True
+            "success": True,
+            "error_type": None,
+            "error_code": None
         }
 
     except Exception as e:
         duration = time.time() - start_time
+
+        # Classify error types
+        error_str = str(e)
+        if "rate_limit" in error_str.lower() or "429" in error_str:
+            error_type = "RATE_LIMIT"
+            error_code = 429
+        elif "timeout" in error_str.lower():
+            error_type = "TIMEOUT"
+        elif "503" in error_str or "service unavailable" in error_str.lower():
+            error_type = "SERVICE_UNAVAILABLE"
+            error_code = 503
+        elif "500" in error_str or "internal server" in error_str.lower():
+            error_type = "SERVER_ERROR"
+            error_code = 500
+        elif "401" in error_str or "unauthorized" in error_str.lower():
+            error_type = "AUTH_ERROR"
+            error_code = 401
+        elif "connection" in error_str.lower():
+            error_type = "CONNECTION_ERROR"
+        else:
+            error_type = "OTHER"
+
         return {
             "index": prompt_index,
             "prompt": prompt,
             "response": None,
-            "error": str(e),
+            "error": error_str,
+            "error_type": error_type,
+            "error_code": error_code,
             "duration": round(duration, 2),
             "success": False
         }
+
+
+def analyze_errors(results):
+    """
+    Analyze and categorize errors from results
+    """
+    failed_requests = [r for r in results if not r["success"]]
+
+    if not failed_requests:
+        return None
+
+    error_breakdown = {}
+    for result in failed_requests:
+        error_type = result.get("error_type", "UNKNOWN")
+        if error_type not in error_breakdown:
+            error_breakdown[error_type] = {
+                "count": 0,
+                "examples": [],
+                "avg_duration": []
+            }
+        error_breakdown[error_type]["count"] += 1
+        error_breakdown[error_type]["avg_duration"].append(result["duration"])
+        if len(error_breakdown[error_type]["examples"]) < 2:  # Store up to 2 examples
+            error_breakdown[error_type]["examples"].append({
+                "index": result["index"],
+                "error": result.get("error", "Unknown"),
+                "duration": result["duration"]
+            })
+
+    # Calculate average durations
+    for error_type in error_breakdown:
+        durations = error_breakdown[error_type]["avg_duration"]
+        error_breakdown[error_type]["avg_duration"] = round(sum(durations) / len(durations), 2)
+
+    return error_breakdown
+
+
+def print_error_analysis(error_breakdown):
+    """
+    Print detailed error analysis
+    """
+    if not error_breakdown:
+        return
+
+    print("\n" + "!" * 80)
+    print("ERROR ANALYSIS")
+    print("!" * 80)
+
+    for error_type, data in error_breakdown.items():
+        print(f"\n{error_type}: {data['count']} occurrence(s)")
+        print(f"  Average duration: {data['avg_duration']}s")
+        print(f"  Examples:")
+        for ex in data["examples"]:
+            print(f"    - Request {ex['index'] + 1}: {ex['error'][:100]}...")
+
+
+def print_performance_warnings(results, total_duration):
+    """
+    Print warnings about performance degradation
+    """
+    successful_requests = [r for r in results if r["success"]]
+
+    if not successful_requests:
+        return
+
+    individual_times = [r["duration"] for r in successful_requests]
+    avg_time = sum(individual_times) / len(individual_times)
+    max_time = max(individual_times)
+
+    warnings = []
+
+    if avg_time > 10:
+        warnings.append(f"⚠ CRITICAL: Average response time is {round(avg_time, 2)}s (> 10s - users will likely abandon)")
+    elif avg_time > 5:
+        warnings.append(f"⚠ WARNING: Average response time is {round(avg_time, 2)}s (> 5s - noticeable delay)")
+    elif avg_time > 2:
+        warnings.append(f"⚠ NOTE: Average response time is {round(avg_time, 2)}s (> 2s - acceptable but not instant)")
+
+    if max_time > 15:
+        warnings.append(f"⚠ CRITICAL: Maximum response time was {round(max_time, 2)}s (> 15s - extremely slow)")
+    elif max_time > 10:
+        warnings.append(f"⚠ WARNING: Maximum response time was {round(max_time, 2)}s (> 10s - very slow)")
+
+    # Check for variance
+    if len(individual_times) > 1:
+        variance = max(individual_times) - min(individual_times)
+        if variance > 5:
+            warnings.append(f"⚠ High variance in response times: {round(variance, 2)}s difference between fastest and slowest")
+
+    if warnings:
+        print("\n" + "!" * 80)
+        print("PERFORMANCE WARNINGS")
+        print("!" * 80)
+        for warning in warnings:
+            print(warning)
 
 
 def test_sequential():
@@ -96,7 +219,8 @@ def test_sequential():
         if result["success"]:
             print(f"✓ Completed in {result['duration']}s")
         else:
-            print(f"✗ Failed in {result['duration']}s - {result['error']}")
+            error_type = result.get("error_type", "UNKNOWN")
+            print(f"✗ Failed ({error_type}) in {result['duration']}s")
 
         results.append(result)
 
@@ -121,12 +245,21 @@ def test_sequential():
         print(f"Min response time: {round(min(individual_times), 2)}s")
         print(f"Max response time: {round(max(individual_times), 2)}s")
 
+    # Error analysis
+    error_breakdown = analyze_errors(results)
+    if error_breakdown:
+        print_error_analysis(error_breakdown)
+
+    # Performance warnings
+    print_performance_warnings(results, overall_duration)
+
     return {
         "mode": "sequential",
         "total_duration": round(overall_duration, 2),
         "results": results,
         "successful": len(successful_requests),
-        "failed": len(failed_requests)
+        "failed": len(failed_requests),
+        "error_breakdown": error_breakdown
     }
 
 
@@ -142,6 +275,7 @@ def test_concurrent():
 
     results = []
     overall_start = time.time()
+    completion_times = []  # Track when each request completes
 
     # Use ThreadPoolExecutor to send all requests concurrently
     with ThreadPoolExecutor(max_workers=NUM_REQUESTS) as executor:
@@ -152,12 +286,15 @@ def test_concurrent():
         for future in as_completed(futures):
             request_index = futures[future]
             result = future.result()
+            completion_time = time.time() - overall_start
+            completion_times.append(completion_time)
             results.append(result)
 
             if result["success"]:
-                print(f"Request {result['index']+1} ✓ Completed in {result['duration']}s")
+                print(f"Request {result['index']+1} ✓ Completed in {result['duration']}s (at T+{round(completion_time, 2)}s)")
             else:
-                print(f"Request {result['index']+1} ✗ Failed in {result['duration']}s - {result.get('error', 'Unknown error')}")
+                error_type = result.get("error_type", "UNKNOWN")
+                print(f"Request {result['index']+1} ✗ Failed ({error_type}) in {result['duration']}s (at T+{round(completion_time, 2)}s)")
 
     overall_duration = time.time() - overall_start
 
@@ -183,12 +320,31 @@ def test_concurrent():
         print(f"Min response time: {round(min(individual_times), 2)}s")
         print(f"Max response time: {round(max(individual_times), 2)}s")
 
+    # Concurrency metrics
+    if len(completion_times) > 1:
+        first_completion = min(completion_times)
+        last_completion = max(completion_times)
+        print(f"\nConcurrency metrics:")
+        print(f"  First request completed: {round(first_completion, 2)}s")
+        print(f"  Last request completed: {round(last_completion, 2)}s")
+        print(f"  Completion window: {round(last_completion - first_completion, 2)}s")
+
+    # Error analysis
+    error_breakdown = analyze_errors(results)
+    if error_breakdown:
+        print_error_analysis(error_breakdown)
+
+    # Performance warnings
+    print_performance_warnings(results, overall_duration)
+
     return {
         "mode": "concurrent",
         "total_duration": round(overall_duration, 2),
         "results": results,
         "successful": len(successful_requests),
-        "failed": len(failed_requests)
+        "failed": len(failed_requests),
+        "error_breakdown": error_breakdown,
+        "completion_times": completion_times
     }
 
 
@@ -281,6 +437,112 @@ def save_responses_to_text(sequential_data, concurrent_data, timestamp):
     return seq_filename, conc_filename
 
 
+def save_diagnostics(sequential_data, concurrent_data, comparison_data, timestamp):
+    """
+    Save diagnostic report with error analysis and performance metrics
+    """
+    diag_filename = f"diagnostics_{timestamp}.txt"
+
+    with open(diag_filename, 'w', encoding='utf-8') as f:
+        f.write("=" * 80 + "\n")
+        f.write("DIAGNOSTIC REPORT\n")
+        f.write("=" * 80 + "\n\n")
+
+        f.write(f"Test Date: {datetime.now().isoformat()}\n")
+        f.write(f"Configuration:\n")
+        f.write(f"  - Requests: {NUM_REQUESTS}\n")
+        f.write(f"  - Model: {MODEL}\n")
+        f.write(f"  - Max Tokens: {MAX_TOKENS}\n\n")
+
+        # Sequential diagnostics
+        f.write("-" * 80 + "\n")
+        f.write("SEQUENTIAL TEST DIAGNOSTICS\n")
+        f.write("-" * 80 + "\n\n")
+
+        f.write(f"Success Rate: {sequential_data['successful']}/{NUM_REQUESTS} ")
+        f.write(f"({round(sequential_data['successful']/NUM_REQUESTS*100, 1)}%)\n")
+        f.write(f"Total Duration: {sequential_data['total_duration']}s\n\n")
+
+        if sequential_data.get('error_breakdown'):
+            f.write("Errors:\n")
+            for error_type, data in sequential_data['error_breakdown'].items():
+                f.write(f"  - {error_type}: {data['count']} occurrence(s)\n")
+                f.write(f"    Avg duration: {data['avg_duration']}s\n")
+                for ex in data['examples']:
+                    f.write(f"    Example: {ex['error'][:150]}\n")
+                f.write("\n")
+        else:
+            f.write("No errors detected.\n\n")
+
+        # Concurrent diagnostics
+        f.write("-" * 80 + "\n")
+        f.write("CONCURRENT TEST DIAGNOSTICS\n")
+        f.write("-" * 80 + "\n\n")
+
+        f.write(f"Success Rate: {concurrent_data['successful']}/{NUM_REQUESTS} ")
+        f.write(f"({round(concurrent_data['successful']/NUM_REQUESTS*100, 1)}%)\n")
+        f.write(f"Total Duration: {concurrent_data['total_duration']}s\n\n")
+
+        if concurrent_data.get('error_breakdown'):
+            f.write("Errors:\n")
+            for error_type, data in concurrent_data['error_breakdown'].items():
+                f.write(f"  - {error_type}: {data['count']} occurrence(s)\n")
+                f.write(f"    Avg duration: {data['avg_duration']}s\n")
+                for ex in data['examples']:
+                    f.write(f"    Example: {ex['error'][:150]}\n")
+                f.write("\n")
+        else:
+            f.write("No errors detected.\n\n")
+
+        # Performance analysis
+        f.write("-" * 80 + "\n")
+        f.write("PERFORMANCE ANALYSIS\n")
+        f.write("-" * 80 + "\n\n")
+
+        seq_successful = [r for r in sequential_data['results'] if r['success']]
+        conc_successful = [r for r in concurrent_data['results'] if r['success']]
+
+        if seq_successful:
+            seq_times = [r['duration'] for r in seq_successful]
+            f.write(f"Sequential avg response time: {round(sum(seq_times)/len(seq_times), 2)}s\n")
+            f.write(f"Sequential max response time: {round(max(seq_times), 2)}s\n\n")
+
+        if conc_successful:
+            conc_times = [r['duration'] for r in conc_successful]
+            f.write(f"Concurrent avg response time: {round(sum(conc_times)/len(conc_times), 2)}s\n")
+            f.write(f"Concurrent max response time: {round(max(conc_times), 2)}s\n\n")
+
+        f.write(f"Speedup: {comparison_data['speedup']}x\n")
+        f.write(f"Time saved: {comparison_data['time_saved']}s\n\n")
+
+        # Recommendations
+        f.write("-" * 80 + "\n")
+        f.write("RECOMMENDATIONS\n")
+        f.write("-" * 80 + "\n\n")
+
+        if conc_successful:
+            avg_conc_time = sum([r['duration'] for r in conc_successful]) / len(conc_successful)
+            if avg_conc_time < 2:
+                f.write("✓ EXCELLENT: Response times are under 2 seconds - ideal for interactive use\n")
+            elif avg_conc_time < 5:
+                f.write("✓ GOOD: Response times are acceptable for most users\n")
+            elif avg_conc_time < 10:
+                f.write("⚠ MODERATE: Response times may cause user frustration\n")
+            else:
+                f.write("✗ POOR: Response times are too slow for interactive dialogue\n")
+
+        if concurrent_data.get('error_breakdown'):
+            rate_limit_count = concurrent_data['error_breakdown'].get('RATE_LIMIT', {}).get('count', 0)
+            if rate_limit_count > 0:
+                f.write(f"\n⚠ Rate limits detected ({rate_limit_count} errors)\n")
+                f.write(f"  Consider reducing concurrency or upgrading API tier\n")
+                f.write(f"  Current load: {NUM_REQUESTS} concurrent requests\n")
+
+        f.write("\n")
+
+    return diag_filename
+
+
 def save_results(sequential_data, concurrent_data, comparison_data):
     """
     Save detailed results to JSON file and responses to text files
@@ -307,9 +569,13 @@ def save_results(sequential_data, concurrent_data, comparison_data):
     # Save text responses for manual examination
     seq_file, conc_file = save_responses_to_text(sequential_data, concurrent_data, timestamp)
 
+    # Save diagnostics report
+    diag_file = save_diagnostics(sequential_data, concurrent_data, comparison_data, timestamp)
+
     print(f"\n📄 Detailed results saved to: {json_filename}")
     print(f"📄 Sequential responses saved to: {seq_file}")
     print(f"📄 Concurrent responses saved to: {conc_file}")
+    print(f"📄 Diagnostic report saved to: {diag_file}")
 
 
 def main():
