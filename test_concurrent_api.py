@@ -11,9 +11,22 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from openai import OpenAI
 import json
+import httpx
 
-# Initialize OpenAI client
-client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+# Initialize OpenAI client with timeout and connection limits
+http_client = httpx.Client(
+    limits=httpx.Limits(
+        max_connections=500,  # Allow up to 500 concurrent connections
+        max_keepalive_connections=100
+    ),
+    timeout=httpx.Timeout(60.0, connect=10.0)  # 60s total, 10s connect timeout
+)
+
+client = OpenAI(
+    api_key=os.getenv('OPENAI_API_KEY'),
+    http_client=http_client,
+    max_retries=0  # Fail fast, don't retry
+)
 
 # Test configuration
 NUM_REQUESTS = 10
@@ -297,6 +310,10 @@ def test_concurrent():
                 print(f"Request {result['index']+1} ✗ Failed ({error_type}) in {result['duration']}s (at T+{round(completion_time, 2)}s)")
 
     overall_duration = time.time() - overall_start
+
+    # Force cleanup and garbage collection
+    import gc
+    gc.collect()
 
     # Sort results by index for consistent reporting
     results.sort(key=lambda x: x["index"])
@@ -609,6 +626,12 @@ def main():
         save_results(sequential_data, concurrent_data, comparison_data)
 
         print("\n✓ Test completed successfully!\n")
+
+        # Final cleanup
+        import gc
+        http_client.close()
+        gc.collect()
+        print("Resources cleaned up. Safe to run again.\n")
 
     except KeyboardInterrupt:
         print("\n\n⚠ Test interrupted by user")
