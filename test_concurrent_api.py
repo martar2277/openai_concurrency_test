@@ -234,13 +234,61 @@ def compare_results(sequential_data, concurrent_data):
     }
 
 
+def save_responses_to_text(sequential_data, concurrent_data, timestamp):
+    """
+    Save responses to separate text files for manual examination
+    """
+    # Save sequential responses
+    seq_filename = f"responses_sequential_{timestamp}.txt"
+    with open(seq_filename, 'w', encoding='utf-8') as f:
+        f.write("=" * 80 + "\n")
+        f.write("SEQUENTIAL RESPONSES\n")
+        f.write("=" * 80 + "\n\n")
+
+        for result in sequential_data["results"]:
+            if result["success"]:
+                f.write(f"Request {result['index'] + 1}:\n")
+                f.write(f"Prompt: {result['prompt']}\n")
+                f.write(f"Response: {result['response']}\n")
+                f.write(f"Duration: {result['duration']}s\n")
+                f.write("-" * 80 + "\n\n")
+            else:
+                f.write(f"Request {result['index'] + 1}: FAILED\n")
+                f.write(f"Prompt: {result['prompt']}\n")
+                f.write(f"Error: {result.get('error', 'Unknown error')}\n")
+                f.write("-" * 80 + "\n\n")
+
+    # Save concurrent responses
+    conc_filename = f"responses_concurrent_{timestamp}.txt"
+    with open(conc_filename, 'w', encoding='utf-8') as f:
+        f.write("=" * 80 + "\n")
+        f.write("CONCURRENT RESPONSES\n")
+        f.write("=" * 80 + "\n\n")
+
+        for result in concurrent_data["results"]:
+            if result["success"]:
+                f.write(f"Request {result['index'] + 1}:\n")
+                f.write(f"Prompt: {result['prompt']}\n")
+                f.write(f"Response: {result['response']}\n")
+                f.write(f"Duration: {result['duration']}s\n")
+                f.write("-" * 80 + "\n\n")
+            else:
+                f.write(f"Request {result['index'] + 1}: FAILED\n")
+                f.write(f"Prompt: {result['prompt']}\n")
+                f.write(f"Error: {result.get('error', 'Unknown error')}\n")
+                f.write("-" * 80 + "\n\n")
+
+    return seq_filename, conc_filename
+
+
 def save_results(sequential_data, concurrent_data, comparison_data):
     """
-    Save detailed results to JSON file
+    Save detailed results to JSON file and responses to text files
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"test_results_{timestamp}.json"
 
+    # Save JSON results
+    json_filename = f"test_results_{timestamp}.json"
     output = {
         "timestamp": datetime.now().isoformat(),
         "configuration": {
@@ -253,10 +301,15 @@ def save_results(sequential_data, concurrent_data, comparison_data):
         "comparison": comparison_data
     }
 
-    with open(filename, 'w') as f:
+    with open(json_filename, 'w') as f:
         json.dump(output, f, indent=2)
 
-    print(f"\n📄 Detailed results saved to: {filename}")
+    # Save text responses for manual examination
+    seq_file, conc_file = save_responses_to_text(sequential_data, concurrent_data, timestamp)
+
+    print(f"\n📄 Detailed results saved to: {json_filename}")
+    print(f"📄 Sequential responses saved to: {seq_file}")
+    print(f"📄 Concurrent responses saved to: {conc_file}")
 
 
 def main():

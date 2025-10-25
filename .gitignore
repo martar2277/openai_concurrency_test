@@ -25,6 +25,8 @@ wheels/
 
 # Test results
 test_results_*.json
+responses_sequential_*.txt
+responses_concurrent_*.txt
 
 # Environment variables
 .env
